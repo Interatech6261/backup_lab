@@ -3,7 +3,6 @@ import os
 import re
 import json
 import shutil
-import subprocess
 import ctypes
 import logging
 import tkinter as tk
@@ -18,12 +17,18 @@ from tkinter import filedialog, messagebox, ttk
 # 1. CONFIGURAÇÕES GERAIS
 # =============================================================================
 
+USUARIO_REDE = "Aluno"
+CAMINHOS_REDE = [
+    r"\\srv\dadosalunos",
+    r"\\192.168.0.27\dadosalunos"
+]
+CREDENCIAL_WINDOWS = "GuardaArquivosLab/Interatech6261/backup_lab"
+
 CONFIG = {
     "rede": {
-        "usuario": "",
+        "usuario": USUARIO_REDE,
         "senha": "",
-        "caminhos": [],
-        "timeout_conexao": 8
+        "caminhos": CAMINHOS_REDE.copy()
     },
     "monitoramento": {
         "pastas": [],
@@ -48,6 +53,216 @@ LIMITE_TEXTO_POPUP = 500
 # =============================================================================
 # 2. VALIDAÇÃO DA CONFIGURAÇÃO
 # =============================================================================
+
+class FILETIME(ctypes.Structure):
+    _fields_ = [
+        ("dwLowDateTime", ctypes.c_uint32),
+        ("dwHighDateTime", ctypes.c_uint32)
+    ]
+
+
+class CREDENTIALW(ctypes.Structure):
+    _fields_ = [
+        ("Flags", ctypes.c_uint32),
+        ("Type", ctypes.c_uint32),
+        ("TargetName", ctypes.c_wchar_p),
+        ("Comment", ctypes.c_wchar_p),
+        ("LastWritten", FILETIME),
+        ("CredentialBlobSize", ctypes.c_uint32),
+        ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
+        ("Persist", ctypes.c_uint32),
+        ("AttributeCount", ctypes.c_uint32),
+        ("Attributes", ctypes.c_void_p),
+        ("TargetAlias", ctypes.c_wchar_p),
+        ("UserName", ctypes.c_wchar_p)
+    ]
+
+
+class NETRESOURCEW(ctypes.Structure):
+    _fields_ = [
+        ("dwScope", ctypes.c_uint32),
+        ("dwType", ctypes.c_uint32),
+        ("dwDisplayType", ctypes.c_uint32),
+        ("dwUsage", ctypes.c_uint32),
+        ("lpLocalName", ctypes.c_wchar_p),
+        ("lpRemoteName", ctypes.c_wchar_p),
+        ("lpComment", ctypes.c_wchar_p),
+        ("lpProvider", ctypes.c_wchar_p)
+    ]
+
+
+def obter_funcoes_rede():
+    """Prepara as funções nativas de conexão SMB do Windows."""
+
+    biblioteca = ctypes.WinDLL("Mpr.dll", use_last_error=True)
+    conectar = biblioteca.WNetAddConnection2W
+    conectar.argtypes = [
+        ctypes.POINTER(NETRESOURCEW),
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_uint32
+    ]
+    conectar.restype = ctypes.c_uint32
+
+    desconectar = biblioteca.WNetCancelConnection2W
+    desconectar.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_int
+    ]
+    desconectar.restype = ctypes.c_uint32
+
+    return conectar, desconectar
+
+
+def obter_funcoes_credenciais():
+    """Prepara as funções do Gerenciador de Credenciais do Windows."""
+
+    biblioteca = ctypes.WinDLL("Advapi32.dll", use_last_error=True)
+    cred_read = biblioteca.CredReadW
+    cred_read.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.POINTER(CREDENTIALW))
+    ]
+    cred_read.restype = ctypes.c_int
+
+    cred_write = biblioteca.CredWriteW
+    cred_write.argtypes = [ctypes.POINTER(CREDENTIALW), ctypes.c_uint32]
+    cred_write.restype = ctypes.c_int
+
+    cred_free = biblioteca.CredFree
+    cred_free.argtypes = [ctypes.c_void_p]
+    cred_free.restype = None
+
+    return cred_read, cred_write, cred_free
+
+
+def carregar_senha_rede():
+    """Lê a senha guardada para este usuário no Windows Credential Manager."""
+
+    cred_read, _, cred_free = obter_funcoes_credenciais()
+    credencial = ctypes.POINTER(CREDENTIALW)()
+
+    if not cred_read(CREDENCIAL_WINDOWS, 1, 0, ctypes.byref(credencial)):
+        codigo_erro = ctypes.get_last_error()
+
+        if codigo_erro == 1168:
+            return None
+
+        raise ctypes.WinError(codigo_erro)
+
+    try:
+        dados = ctypes.string_at(
+            credencial.contents.CredentialBlob,
+            credencial.contents.CredentialBlobSize
+        )
+        return dados.decode("utf-16-le")
+    finally:
+        cred_free(credencial)
+
+
+def salvar_senha_rede(senha):
+    """Guarda a senha no Windows Credential Manager para este usuário."""
+
+    _, cred_write, _ = obter_funcoes_credenciais()
+    dados = senha.encode("utf-16-le")
+
+    if len(dados) > 2560:
+        raise ValueError("A senha excede o tamanho aceito pelo Windows.")
+
+    buffer = (ctypes.c_ubyte * len(dados)).from_buffer_copy(dados)
+    credencial = CREDENTIALW(
+        Flags=0,
+        Type=1,
+        TargetName=CREDENCIAL_WINDOWS,
+        Comment="Credencial do compartilhamento do Guarda Arquivos Lab",
+        LastWritten=FILETIME(),
+        CredentialBlobSize=len(dados),
+        CredentialBlob=ctypes.cast(
+            buffer,
+            ctypes.POINTER(ctypes.c_ubyte)
+        ),
+        Persist=2,
+        AttributeCount=0,
+        Attributes=None,
+        TargetAlias=None,
+        UserName=USUARIO_REDE
+    )
+
+    if not cred_write(ctypes.byref(credencial), 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def solicitar_senha_rede():
+    """Pede a senha uma vez e a salva no Windows Credential Manager."""
+
+    janela = tk.Tk()
+    janela.title("Senha do compartilhamento")
+    janela.resizable(False, False)
+    conteudo = ttk.Frame(janela, padding=16)
+    conteudo.grid(row=0, column=0, sticky="nsew")
+    conteudo.columnconfigure(0, weight=1)
+
+    ttk.Label(
+        conteudo,
+        text=(
+            f"Informe a senha da conta {USUARIO_REDE}. "
+            "Ela será guardada no Gerenciador de Credenciais do Windows, "
+            "não no script."
+        ),
+        wraplength=420
+    ).grid(row=0, column=0, sticky="w", pady=(0, 12))
+
+    ttk.Label(conteudo, text="Senha").grid(row=1, column=0, sticky="w")
+    campo_senha = ttk.Entry(conteudo, show="*")
+    campo_senha.grid(row=2, column=0, sticky="ew", pady=(2, 12))
+    resultado = {"senha": None}
+
+    def salvar_e_fechar():
+        senha = campo_senha.get()
+
+        if not senha:
+            messagebox.showerror(
+                "Senha obrigatória",
+                "Informe a senha para continuar.",
+                parent=janela
+            )
+            return
+
+        try:
+            salvar_senha_rede(senha)
+        except (OSError, ValueError) as erro:
+            messagebox.showerror(
+                "Não foi possível salvar a senha",
+                str(erro),
+                parent=janela
+            )
+            return
+
+        resultado["senha"] = senha
+        janela.destroy()
+
+    botoes = ttk.Frame(conteudo)
+    botoes.grid(row=3, column=0, sticky="e")
+    ttk.Button(
+        botoes,
+        text="Cancelar",
+        command=janela.destroy
+    ).grid(row=0, column=0, padx=(0, 8))
+    ttk.Button(
+        botoes,
+        text="Salvar e continuar",
+        command=salvar_e_fechar
+    ).grid(row=0, column=1)
+
+    janela.protocol("WM_DELETE_WINDOW", janela.destroy)
+    campo_senha.focus_set()
+    janela.mainloop()
+
+    return resultado["senha"]
+
 
 def validar_configuracao(config):
     """
@@ -82,11 +297,6 @@ def validar_configuracao(config):
         or not all(isinstance(p, str) and p.strip() for p in rede["caminhos"])
     ):
         raise ValueError("A lista de caminhos de rede é inválida.")
-
-    timeout_rede = rede.get("timeout_conexao", 8)
-
-    if type(timeout_rede) is not int or timeout_rede <= 0:
-        raise ValueError("timeout_conexao deve ser um inteiro positivo.")
 
     # Validação das pastas monitoradas.
     pastas = monitoramento.get("pastas", [])
@@ -135,116 +345,72 @@ def extrair_caminhos(texto, descricao):
 
 
 def solicitar_configuracao_grafica():
-    """Solicita credenciais e caminhos em uma janela gráfica."""
+    """Solicita somente as pastas de origem em uma janela gráfica."""
 
     janela = tk.Tk()
-    janela.title("Configuração do backup")
-    janela.geometry("700x680")
-    janela.minsize(580, 600)
+    janela.title("Pastas para varrer")
+    janela.geometry("700x520")
+    janela.minsize(580, 420)
     janela.columnconfigure(0, weight=1)
 
     conteudo = ttk.Frame(janela, padding=16)
     conteudo.grid(row=0, column=0, sticky="nsew")
     janela.rowconfigure(0, weight=1)
     conteudo.columnconfigure(0, weight=1)
+    conteudo.rowconfigure(2, weight=1)
 
     ttk.Label(
         conteudo,
-        text="Informe os dados para esta execução. Eles não serão salvos.",
+        text=(
+            "Adicione as pastas que deseja verificar. "
+            "Os arquivos encontrados serão movidos para o compartilhamento."
+        ),
         wraplength=640
     ).grid(row=0, column=0, sticky="w", pady=(0, 12))
 
-    ttk.Label(conteudo, text="Usuário da rede").grid(
-        row=1, column=0, sticky="w"
-    )
-    usuario = ttk.Entry(conteudo)
-    usuario.grid(row=2, column=0, sticky="ew", pady=(2, 10))
+    pastas = tk.Text(conteudo, height=12, wrap="none")
+    pastas.grid(row=2, column=0, sticky="nsew", pady=(2, 8))
 
-    ttk.Label(conteudo, text="Senha da rede").grid(
-        row=3, column=0, sticky="w"
-    )
-    senha = ttk.Entry(conteudo, show="*")
-    senha.grid(row=4, column=0, sticky="ew", pady=(2, 10))
-
-    ttk.Label(
-        conteudo,
-        text="Compartilhamento(s) de destino (um caminho por linha)"
-    ).grid(row=5, column=0, sticky="w")
-    destinos = tk.Text(conteudo, height=4, wrap="none")
-    destinos.grid(row=6, column=0, sticky="nsew", pady=(2, 4))
-
-    ttk.Label(
-        conteudo,
-        text="Pasta(s) de origem para verificar (um caminho por linha)"
-    ).grid(row=7, column=0, sticky="w", pady=(8, 0))
-    pastas = tk.Text(conteudo, height=8, wrap="none")
-    pastas.grid(row=8, column=0, sticky="nsew", pady=(2, 4))
-    conteudo.rowconfigure(8, weight=1)
-
-    def adicionar_pasta(campo, titulo):
+    def adicionar_pasta():
         caminho = filedialog.askdirectory(
             parent=janela,
-            title=titulo,
+            title="Selecione uma pasta de origem",
             mustexist=True
         )
 
         if caminho:
-            atuais = campo.get("1.0", "end").splitlines()
+            atuais = pastas.get("1.0", "end").splitlines()
 
             if caminho not in atuais:
-                campo.insert("end", f"{caminho}\n")
+                pastas.insert("end", f"{caminho}\n")
 
-    botoes_pastas = ttk.Frame(conteudo)
-    botoes_pastas.grid(row=9, column=0, sticky="w", pady=(2, 10))
     ttk.Button(
-        botoes_pastas,
-        text="Procurar destino...",
-        command=lambda: adicionar_pasta(
-            destinos,
-            "Selecione uma pasta de destino na rede"
-        )
-    ).grid(row=0, column=0, padx=(0, 6))
-    ttk.Button(
-        botoes_pastas,
-        text="Adicionar pasta de origem...",
-        command=lambda: adicionar_pasta(
-            pastas,
-            "Selecione uma pasta de origem"
-        )
-    ).grid(row=0, column=1)
+        conteudo,
+        text="Adicionar pasta...",
+        command=adicionar_pasta
+    ).grid(row=1, column=0, sticky="w", pady=(0, 4))
+
+    resultado = {"confirmado": False}
 
     def confirmar():
         try:
-            CONFIG["rede"]["caminhos"] = extrair_caminhos(
-                destinos.get("1.0", "end"),
-                "destino"
-            )
             CONFIG["monitoramento"]["pastas"] = extrair_caminhos(
                 pastas.get("1.0", "end"),
                 "origem"
             )
-            CONFIG["rede"]["usuario"] = usuario.get().strip()
-            CONFIG["rede"]["senha"] = senha.get()
-            validar_configuracao(CONFIG)
         except ValueError as erro:
             messagebox.showerror(
-                "Configuração inválida",
+                "Pastas obrigatórias",
                 str(erro),
                 parent=janela
             )
-            return False
+            return
 
+        resultado["confirmado"] = True
         janela.destroy()
-        return True
 
     botoes = ttk.Frame(conteudo)
-    botoes.grid(row=10, column=0, sticky="e")
-    resultado = {"confirmado": False}
-
-    def confirmar_e_fechar():
-        if confirmar():
-            resultado["confirmado"] = True
-
+    botoes.grid(row=3, column=0, sticky="e")
     ttk.Button(
         botoes,
         text="Cancelar",
@@ -253,11 +419,10 @@ def solicitar_configuracao_grafica():
     ttk.Button(
         botoes,
         text="Iniciar backup",
-        command=confirmar_e_fechar
+        command=confirmar
     ).grid(row=0, column=1)
 
     janela.protocol("WM_DELETE_WINDOW", janela.destroy)
-    usuario.focus_set()
     janela.mainloop()
 
     return resultado["confirmado"]
@@ -368,8 +533,8 @@ def configurar_logging():
 
 def obter_pastas_origem():
     """
-    Combina as pastas configuradas no JSON com as pastas padrão
-    do Windows e do OneDrive, conforme as opções habilitadas.
+    Valida as pastas selecionadas pelo usuário e adiciona as pastas padrão
+    do Windows e do OneDrive, se habilitadas.
     """
 
     logging.info("Iniciando mapeamento das pastas de origem.")
@@ -378,7 +543,7 @@ def obter_pastas_origem():
 
     pastas = []
 
-    # Pastas definidas manualmente no JSON.
+    # Pastas selecionadas pelo usuário na janela.
     for caminho in monitoramento.get("pastas", []):
 
         caminho_expandido = os.path.expandvars(
@@ -484,36 +649,32 @@ def conectar_rede(caminho):
         return True
 
     try:
-        subprocess.run(
-            ["net", "use", caminho, "/delete"],
-            capture_output=True,
-            text=True
+        conectar, desconectar = obter_funcoes_rede()
+        desconectar(caminho, 0, 1)
+
+        recurso = NETRESOURCEW(
+            dwScope=0,
+            dwType=1,
+            dwDisplayType=0,
+            dwUsage=0,
+            lpLocalName=None,
+            lpRemoteName=caminho,
+            lpComment=None,
+            lpProvider=None
+        )
+        codigo_erro = conectar(
+            ctypes.byref(recurso),
+            rede["senha"],
+            rede["usuario"],
+            0
         )
 
-        processo = subprocess.Popen(
-            [
-                "net",
-                "use",
-                caminho,
-                rede["senha"],
-                f'/user:{rede["usuario"]}'
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-
-        try:
-            processo.wait(
-                timeout=rede.get("timeout_conexao", 8)
-            )
-
-        except subprocess.TimeoutExpired:
-            processo.kill()
-
+        if codigo_erro:
             logging.error(
-                f"Timeout ao conectar em {caminho}."
+                "Falha ao conectar em %s: %s",
+                caminho,
+                ctypes.FormatError(codigo_erro).strip()
             )
-
             return False
 
         if pasta_rede.exists():
@@ -553,13 +714,17 @@ def desconectar_rede(caminho):
     logging.info(f"Desconectando rede: {caminho}")
 
     try:
-        subprocess.run(
-            ["net", "use", caminho, "/delete"],
-            capture_output=True,
-            text=True
-        )
+        _, desconectar = obter_funcoes_rede()
+        codigo_erro = desconectar(caminho, 0, 1)
 
-        logging.info("Rede desconectada.")
+        if codigo_erro not in (0, 2250):
+            logging.error(
+                "Falha ao desconectar %s: %s",
+                caminho,
+                ctypes.FormatError(codigo_erro).strip()
+            )
+        else:
+            logging.info("Rede desconectada.")
 
     except Exception:
         logging.exception(
@@ -1067,9 +1232,20 @@ def varredura():
 # =============================================================================
 
 def main():
-    """Solicita configurações, inicializa logs e executa o backup."""
+    """Obtém a credencial e as pastas antes de executar o backup."""
 
     try:
+
+        senha = carregar_senha_rede()
+
+        if senha is None:
+            senha = solicitar_senha_rede()
+
+        if not senha:
+            return
+
+        CONFIG["rede"]["senha"] = senha
+        validar_configuracao(CONFIG)
 
         if not solicitar_configuracao_grafica():
             return
@@ -1080,7 +1256,10 @@ def main():
             "Sistema Guarda Arquivos Lab iniciado."
         )
 
-        varredura()
+        try:
+            varredura()
+        finally:
+            CONFIG["rede"]["senha"] = ""
 
     except ValueError as erro:
 

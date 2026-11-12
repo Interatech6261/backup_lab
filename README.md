@@ -12,17 +12,20 @@ do item.
 
 ## Configuração
 
-Ao iniciar, uma janela solicita:
+O usuário de rede e os compartilhamentos de destino ficam predefinidos no
+código. Na primeira execução, uma janela solicita a senha e a guarda no
+Gerenciador de Credenciais do Windows, vinculada à conta atual do Windows.
+Depois disso, a senha não precisa ser digitada novamente nesse computador.
+Ela não é incluída no script nem enviada ao GitHub.
 
-- usuário e senha do compartilhamento (a senha não aparece enquanto é digitada);
-- um ou mais caminhos de destino na rede (também é possível usar o seletor);
-- uma ou mais pastas de origem (também é possível selecioná-las).
+Em cada execução, uma janela solicita somente as pastas de origem. Use
+"Adicionar pasta..." para selecionar pastas ou informe caminhos, um por linha.
+Clique em "Iniciar backup" para executar; "Cancelar" fecha sem executar.
 
-Informe caminhos adicionais um por linha. Esses dados são solicitados
-novamente em cada execução e não são gravados pelo script. Ao clicar em
-"Iniciar backup", a rotina começa; fechar a janela ou clicar em "Cancelar"
-encerra sem executar. O endpoint opcional de logs continua configurável na
-seção `CONFIG` no início do arquivo; use `None` para desabilitar o envio remoto.
+Para remover a senha salva, apague a credencial `GuardaArquivosLab/Interatech6261/backup_lab`
+no Gerenciador de Credenciais do Windows. O endpoint opcional de logs continua
+configurável na seção `CONFIG` no início do arquivo; use `None` para desabilitar
+o envio remoto.
 
 ## Execução
 
