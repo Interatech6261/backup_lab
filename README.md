@@ -12,32 +12,17 @@ do item.
 
 ## Configuração
 
-Crie um arquivo `config.json` na mesma pasta de `backup_lab.py`:
+Ao iniciar, o script solicita:
 
-```json
-{
-  "rede": {
-    "usuario": "SEU_USUARIO",
-    "senha": "SUA_SENHA",
-    "caminhos": ["\\\\servidor\\compartilhamento"],
-    "timeout_conexao": 8
-  },
-  "monitoramento": {
-    "pastas": [],
-    "incluir_pastas_padrao": true,
-    "incluir_onedrive": true
-  },
-  "logs": {
-    "url": null,
-    "timeout": 10
-  }
-}
-```
+- usuário e senha do compartilhamento (a senha não aparece enquanto é digitada);
+- um ou mais caminhos de destino na rede;
+- uma ou mais pastas de origem para verificar.
 
-Substitua as credenciais e o caminho de rede pelos valores do seu ambiente.
-O envio remoto de logs é opcional; deixe `url` como `null` para registrar
-somente no console. O `config.json` é ignorado pelo Git para evitar publicar
-credenciais.
+Informe cada caminho em uma linha e pressione Enter em uma linha vazia para
+encerrar cada lista. Esses dados são solicitados novamente em cada execução e
+não são gravados pelo script. O endpoint opcional de logs continua configurável
+na seção `CONFIG` no início do arquivo; use `None` para registrar somente no
+console.
 
 ## Execução
 

@@ -5,9 +5,9 @@ import json
 import shutil
 import subprocess
 import ctypes
+import getpass
 import logging
 import urllib.request
-import urllib.error
 
 from datetime import datetime
 from pathlib import Path
@@ -17,8 +17,23 @@ from pathlib import Path
 # 1. CONFIGURAÇÕES GERAIS
 # =============================================================================
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_FILE = SCRIPT_DIR / "config.json"
+CONFIG = {
+    "rede": {
+        "usuario": "",
+        "senha": "",
+        "caminhos": [],
+        "timeout_conexao": 8
+    },
+    "monitoramento": {
+        "pastas": [],
+        "incluir_pastas_padrao": False,
+        "incluir_onedrive": False
+    },
+    "logs": {
+        "url": None,
+        "timeout": 10
+    }
+}
 
 NOME_ARQUIVO_CONFIG = ".curso_atual.txt"
 
@@ -28,38 +43,63 @@ LIMITE_MATRICULA_MAX = 10000000000
 LIMITE_ITENS_RELATORIO = 15
 LIMITE_TEXTO_POPUP = 500
 
-CONFIG = None
-
 
 # =============================================================================
-# 2. GERENCIAMENTO DA CONFIGURAÇÃO
+# 2. VALIDAÇÃO DA CONFIGURAÇÃO
 # =============================================================================
 
-def carregar_configuracao():
+def solicitar_caminhos(mensagem):
+    """Solicita caminhos, um por linha, até receber uma linha vazia."""
+
+    print(mensagem)
+
+    caminhos = []
+
+    while True:
+        caminho = input("> ").strip()
+
+        if not caminho:
+            break
+
+        caminhos.append(caminho)
+
+    if not caminhos:
+        raise ValueError("Informe pelo menos um caminho.")
+
+    return caminhos
+
+
+def solicitar_configuracao():
+    """Solicita credenciais e caminhos no início de cada execução."""
+
+    print("Configuração do backup (os dados não serão salvos).")
+
+    CONFIG["rede"]["usuario"] = input(
+        "Usuário do compartilhamento de rede: "
+    ).strip()
+
+    CONFIG["rede"]["senha"] = getpass.getpass(
+        "Senha do compartilhamento de rede: "
+    )
+
+    CONFIG["rede"]["caminhos"] = solicitar_caminhos(
+        "Caminho(s) do compartilhamento de destino, um por linha. "
+        "Pressione Enter em uma linha vazia para terminar:"
+    )
+
+    CONFIG["monitoramento"]["pastas"] = solicitar_caminhos(
+        "Pasta(s) de origem para verificar, uma por linha. "
+        "Pressione Enter em uma linha vazia para terminar:"
+    )
+
+
+def validar_configuracao(config):
     """
-    Carrega e valida as configurações externas do sistema.
-
-    Retorna o dicionário de configurações ou encerra a inicialização
-    quando o arquivo ou seus dados forem inválidos.
+    Valida as configurações definidas no início deste arquivo.
     """
-
-    if not CONFIG_FILE.exists():
-        raise FileNotFoundError(
-            f"Arquivo de configuração não encontrado: {CONFIG_FILE}"
-        )
-
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as arquivo:
-            config = json.load(arquivo)
-
-    except json.JSONDecodeError as erro:
-        raise ValueError(
-            f"JSON inválido na linha {erro.lineno}, "
-            f"coluna {erro.colno}: {erro.msg}"
-        ) from erro
 
     if not isinstance(config, dict):
-        raise ValueError("A configuração principal deve ser um objeto JSON.")
+        raise ValueError("A configuração principal deve ser um dicionário.")
 
     secoes_obrigatorias = ["rede", "monitoramento", "logs"]
 
@@ -111,7 +151,7 @@ def carregar_configuracao():
         not isinstance(url_logs, str)
         or not url_logs.startswith(("http://", "https://"))
     ):
-        raise ValueError("A URL de logs deve ser uma URL HTTP/HTTPS ou null.")
+        raise ValueError("A URL de logs deve ser uma URL HTTP/HTTPS ou None.")
 
     timeout_logs = logs.get("timeout", 10)
 
@@ -122,7 +162,7 @@ def carregar_configuracao():
     ):
         raise ValueError("O timeout dos logs deve ser positivo.")
 
-    logging.info("Configuração carregada e validada.")
+    logging.info("Configuração validada.")
 
     return config
 
@@ -354,14 +394,14 @@ def conectar_rede(caminho):
             text=True
         )
 
-        comando = (
-            f'net use "{caminho}" "{rede["senha"]}" '
-            f'/user:"{rede["usuario"]}"'
-        )
-
         processo = subprocess.Popen(
-            comando,
-            shell=True,
+            [
+                "net",
+                "use",
+                caminho,
+                rede["senha"],
+                f'/user:{rede["usuario"]}'
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
@@ -931,13 +971,13 @@ def varredura():
 # =============================================================================
 
 def main():
-    """Inicializa configurações, logs e rotina de backup."""
-
-    global CONFIG
+    """Solicita configurações, inicializa logs e executa o backup."""
 
     try:
 
-        CONFIG = carregar_configuracao()
+        solicitar_configuracao()
+
+        validar_configuracao(CONFIG)
 
         configurar_logging()
 
@@ -947,12 +987,12 @@ def main():
 
         varredura()
 
-    except (FileNotFoundError, ValueError) as erro:
+    except ValueError as erro:
 
         mensagem = (
             "Não foi possível iniciar o sistema.\n\n"
             f"Motivo: {erro}\n\n"
-            "Verifique o arquivo config.json."
+            "Verifique a seção CONFIG no início de backup_lab.py."
         )
 
         print(mensagem)
