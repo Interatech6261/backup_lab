@@ -12,17 +12,17 @@ do item.
 
 ## Configuração
 
-Ao iniciar, o script solicita:
+Ao iniciar, uma janela solicita:
 
 - usuário e senha do compartilhamento (a senha não aparece enquanto é digitada);
-- um ou mais caminhos de destino na rede;
-- uma ou mais pastas de origem para verificar.
+- um ou mais caminhos de destino na rede (também é possível usar o seletor);
+- uma ou mais pastas de origem (também é possível selecioná-las).
 
-Informe cada caminho em uma linha e pressione Enter em uma linha vazia para
-encerrar cada lista. Esses dados são solicitados novamente em cada execução e
-não são gravados pelo script. O endpoint opcional de logs continua configurável
-na seção `CONFIG` no início do arquivo; use `None` para registrar somente no
-console.
+Informe caminhos adicionais um por linha. Esses dados são solicitados
+novamente em cada execução e não são gravados pelo script. Ao clicar em
+"Iniciar backup", a rotina começa; fechar a janela ou clicar em "Cancelar"
+encerra sem executar. O endpoint opcional de logs continua configurável na
+seção `CONFIG` no início do arquivo; use `None` para desabilitar o envio remoto.
 
 ## Execução
 

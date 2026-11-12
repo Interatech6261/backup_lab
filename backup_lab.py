@@ -5,12 +5,13 @@ import json
 import shutil
 import subprocess
 import ctypes
-import getpass
 import logging
+import tkinter as tk
 import urllib.request
 
 from datetime import datetime
 from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
 
 
 # =============================================================================
@@ -47,51 +48,6 @@ LIMITE_TEXTO_POPUP = 500
 # =============================================================================
 # 2. VALIDAÇÃO DA CONFIGURAÇÃO
 # =============================================================================
-
-def solicitar_caminhos(mensagem):
-    """Solicita caminhos, um por linha, até receber uma linha vazia."""
-
-    print(mensagem)
-
-    caminhos = []
-
-    while True:
-        caminho = input("> ").strip()
-
-        if not caminho:
-            break
-
-        caminhos.append(caminho)
-
-    if not caminhos:
-        raise ValueError("Informe pelo menos um caminho.")
-
-    return caminhos
-
-
-def solicitar_configuracao():
-    """Solicita credenciais e caminhos no início de cada execução."""
-
-    print("Configuração do backup (os dados não serão salvos).")
-
-    CONFIG["rede"]["usuario"] = input(
-        "Usuário do compartilhamento de rede: "
-    ).strip()
-
-    CONFIG["rede"]["senha"] = getpass.getpass(
-        "Senha do compartilhamento de rede: "
-    )
-
-    CONFIG["rede"]["caminhos"] = solicitar_caminhos(
-        "Caminho(s) do compartilhamento de destino, um por linha. "
-        "Pressione Enter em uma linha vazia para terminar:"
-    )
-
-    CONFIG["monitoramento"]["pastas"] = solicitar_caminhos(
-        "Pasta(s) de origem para verificar, uma por linha. "
-        "Pressione Enter em uma linha vazia para terminar:"
-    )
-
 
 def validar_configuracao(config):
     """
@@ -165,6 +121,146 @@ def validar_configuracao(config):
     logging.info("Configuração validada.")
 
     return config
+
+
+def extrair_caminhos(texto, descricao):
+    """Converte os caminhos de um campo multilinha em uma lista validada."""
+
+    caminhos = [linha.strip() for linha in texto.splitlines() if linha.strip()]
+
+    if not caminhos:
+        raise ValueError(f"Informe pelo menos um caminho de {descricao}.")
+
+    return caminhos
+
+
+def solicitar_configuracao_grafica():
+    """Solicita credenciais e caminhos em uma janela gráfica."""
+
+    janela = tk.Tk()
+    janela.title("Configuração do backup")
+    janela.geometry("700x680")
+    janela.minsize(580, 600)
+    janela.columnconfigure(0, weight=1)
+
+    conteudo = ttk.Frame(janela, padding=16)
+    conteudo.grid(row=0, column=0, sticky="nsew")
+    janela.rowconfigure(0, weight=1)
+    conteudo.columnconfigure(0, weight=1)
+
+    ttk.Label(
+        conteudo,
+        text="Informe os dados para esta execução. Eles não serão salvos.",
+        wraplength=640
+    ).grid(row=0, column=0, sticky="w", pady=(0, 12))
+
+    ttk.Label(conteudo, text="Usuário da rede").grid(
+        row=1, column=0, sticky="w"
+    )
+    usuario = ttk.Entry(conteudo)
+    usuario.grid(row=2, column=0, sticky="ew", pady=(2, 10))
+
+    ttk.Label(conteudo, text="Senha da rede").grid(
+        row=3, column=0, sticky="w"
+    )
+    senha = ttk.Entry(conteudo, show="*")
+    senha.grid(row=4, column=0, sticky="ew", pady=(2, 10))
+
+    ttk.Label(
+        conteudo,
+        text="Compartilhamento(s) de destino (um caminho por linha)"
+    ).grid(row=5, column=0, sticky="w")
+    destinos = tk.Text(conteudo, height=4, wrap="none")
+    destinos.grid(row=6, column=0, sticky="nsew", pady=(2, 4))
+
+    ttk.Label(
+        conteudo,
+        text="Pasta(s) de origem para verificar (um caminho por linha)"
+    ).grid(row=7, column=0, sticky="w", pady=(8, 0))
+    pastas = tk.Text(conteudo, height=8, wrap="none")
+    pastas.grid(row=8, column=0, sticky="nsew", pady=(2, 4))
+    conteudo.rowconfigure(8, weight=1)
+
+    def adicionar_pasta(campo, titulo):
+        caminho = filedialog.askdirectory(
+            parent=janela,
+            title=titulo,
+            mustexist=True
+        )
+
+        if caminho:
+            atuais = campo.get("1.0", "end").splitlines()
+
+            if caminho not in atuais:
+                campo.insert("end", f"{caminho}\n")
+
+    botoes_pastas = ttk.Frame(conteudo)
+    botoes_pastas.grid(row=9, column=0, sticky="w", pady=(2, 10))
+    ttk.Button(
+        botoes_pastas,
+        text="Procurar destino...",
+        command=lambda: adicionar_pasta(
+            destinos,
+            "Selecione uma pasta de destino na rede"
+        )
+    ).grid(row=0, column=0, padx=(0, 6))
+    ttk.Button(
+        botoes_pastas,
+        text="Adicionar pasta de origem...",
+        command=lambda: adicionar_pasta(
+            pastas,
+            "Selecione uma pasta de origem"
+        )
+    ).grid(row=0, column=1)
+
+    def confirmar():
+        try:
+            CONFIG["rede"]["caminhos"] = extrair_caminhos(
+                destinos.get("1.0", "end"),
+                "destino"
+            )
+            CONFIG["monitoramento"]["pastas"] = extrair_caminhos(
+                pastas.get("1.0", "end"),
+                "origem"
+            )
+            CONFIG["rede"]["usuario"] = usuario.get().strip()
+            CONFIG["rede"]["senha"] = senha.get()
+            validar_configuracao(CONFIG)
+        except ValueError as erro:
+            messagebox.showerror(
+                "Configuração inválida",
+                str(erro),
+                parent=janela
+            )
+            return False
+
+        janela.destroy()
+        return True
+
+    botoes = ttk.Frame(conteudo)
+    botoes.grid(row=10, column=0, sticky="e")
+    resultado = {"confirmado": False}
+
+    def confirmar_e_fechar():
+        if confirmar():
+            resultado["confirmado"] = True
+
+    ttk.Button(
+        botoes,
+        text="Cancelar",
+        command=janela.destroy
+    ).grid(row=0, column=0, padx=(0, 8))
+    ttk.Button(
+        botoes,
+        text="Iniciar backup",
+        command=confirmar_e_fechar
+    ).grid(row=0, column=1)
+
+    janela.protocol("WM_DELETE_WINDOW", janela.destroy)
+    usuario.focus_set()
+    janela.mainloop()
+
+    return resultado["confirmado"]
 
 
 # =============================================================================
@@ -975,9 +1071,8 @@ def main():
 
     try:
 
-        solicitar_configuracao()
-
-        validar_configuracao(CONFIG)
+        if not solicitar_configuracao_grafica():
+            return
 
         configurar_logging()
 
@@ -990,18 +1085,14 @@ def main():
     except ValueError as erro:
 
         mensagem = (
-            "Não foi possível iniciar o sistema.\n\n"
+            "Não foi possível iniciar ou concluir o backup.\n\n"
             f"Motivo: {erro}\n\n"
-            "Verifique a seção CONFIG no início de backup_lab.py."
+            "Confira os dados informados e tente novamente."
         )
 
-        print(mensagem)
-
-        ctypes.windll.user32.MessageBoxW(
-            0,
-            mensagem,
+        messagebox.showerror(
             "Erro de Configuração",
-            16
+            mensagem
         )
 
     except Exception as erro:
