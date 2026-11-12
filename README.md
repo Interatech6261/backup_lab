@@ -12,20 +12,26 @@ do item.
 
 ## Configuração
 
-O usuário de rede e os compartilhamentos de destino ficam predefinidos no
-código. Na primeira execução, uma janela solicita a senha e a guarda no
-Gerenciador de Credenciais do Windows, vinculada à conta atual do Windows.
-Depois disso, a senha não precisa ser digitada novamente nesse computador.
-Ela não é incluída no script nem enviada ao GitHub.
+Na primeira execução, o programa cria automaticamente um arquivo local em
+`%LOCALAPPDATA%\GuardaArquivosLab\config.json` (normalmente em
+`C:\Users\<usuário>\AppData\Local\GuardaArquivosLab\config.json`) e abre a
+configuração inicial das pastas. Depois de clicar em "Iniciar backup", as
+opções são salvas. Nas próximas execuções, uma janela oferece os botões
+"Iniciar backup", "Configurar pastas..." e "Sair".
 
-Em cada execução, uma janela solicita somente as pastas de origem. Use
-"Adicionar pasta..." para selecionar pastas ou informe caminhos, um por linha.
-Clique em "Iniciar backup" para executar; "Cancelar" fecha sem executar.
+Também é possível fechar o programa e editar esse JSON a qualquer momento. Por
+exemplo, no PowerShell:
 
-Para remover a senha salva, apague a credencial `GuardaArquivosLab/Interatech6261/backup_lab`
-no Gerenciador de Credenciais do Windows. O endpoint opcional de logs continua
-configurável na seção `CONFIG` no início do arquivo; use `None` para desabilitar
-o envio remoto.
+```powershell
+notepad "$env:LOCALAPPDATA\GuardaArquivosLab\config.json"
+```
+
+Também é possível abrir diretamente a configuração das pastas com
+`py backup_lab.py --configurar`. As alterações feitas no JSON são carregadas
+na próxima execução. Não adicione uma senha ao arquivo: se `SENHA_REDE` estiver
+vazio, ela será solicitada uma vez e armazenada no Gerenciador de Credenciais
+do Windows, vinculada à conta atual. Mantenha `SENHA_REDE` vazio e não grave
+senhas no código nem no arquivo de configuração.
 
 ## Execução
 
@@ -42,6 +48,14 @@ e abrir o script:
 
 ```powershell
 $url="https://raw.githubusercontent.com/Interatech6261/backup_lab/main/backup_lab.py"; $file="$env:TEMP\backup_lab.py"; Invoke-WebRequest -Uri $url -OutFile $file -ErrorAction Stop; if ($?) { py $file }
+```
+
+Na primeira execução, a janela pedirá as pastas e a senha da rede. Nas
+execuções seguintes, escolha **Iniciar backup** ou **Configurar pastas...** na
+janela inicial. Para abrir a configuração diretamente:
+
+```powershell
+py $file --configurar
 ```
 
 O script abre a janela de configuração e inicia o backup ao clicar em

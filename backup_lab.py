@@ -1,4 +1,28 @@
+"""
+Guarda e organiza arquivos de alunos em um compartilhamento de rede.
 
+O programa verifica as pastas de origem configuradas e identifica, pelo nome
+de cada arquivo ou pasta, uma matrícula numérica dentro dos limites definidos
+abaixo. Os itens elegíveis são organizados no destino da rede pela matrícula
+e, quando disponível, pelo curso registrado em ``.curso_atual.txt``.
+
+Fluxo principal:
+    1. Carrega as opções locais em ``%LOCALAPPDATA%\\GuardaArquivosLab``.
+    2. Mostra o menu para iniciar o backup ou editar as pastas monitoradas.
+    3. Obtém a senha do Gerenciador de Credenciais do Windows, solicitando-a
+       apenas quando ainda não estiver salva.
+    4. Conecta ao primeiro compartilhamento disponível e processa os itens.
+    5. Exibe um resumo e encerra a conexão de rede.
+
+ATENÇÃO: os itens são copiados para o destino e depois removidos da origem.
+Use somente destinos e pastas autorizados, e valide o resultado antes de
+executar com arquivos importantes.
+
+Para executar normalmente, use ``py backup_lab.py``. Para abrir diretamente
+a configuração de pastas, use ``py backup_lab.py --configurar``.
+"""
+
+import argparse
 import os
 import re
 import json
@@ -18,11 +42,22 @@ from tkinter import filedialog, messagebox, ttk
 # =============================================================================
 
 USUARIO_REDE = "Aluno"
+SENHA_REDE = ""
 CAMINHOS_REDE = [
     r"\\srv\dadosalunos",
     r"\\192.168.0.27\dadosalunos"
 ]
 CREDENCIAL_WINDOWS = "GuardaArquivosLab/Interatech6261/backup_lab"
+PASTA_CONFIGURACAO = (
+    Path(
+        os.environ.get(
+            "LOCALAPPDATA",
+            str(Path.home() / "AppData" / "Local")
+        )
+    )
+    / "GuardaArquivosLab"
+)
+ARQUIVO_CONFIGURACAO = PASTA_CONFIGURACAO / "config.json"
 
 CONFIG = {
     "rede": {
@@ -55,6 +90,8 @@ LIMITE_TEXTO_POPUP = 500
 # =============================================================================
 
 class FILETIME(ctypes.Structure):
+    """Representa os dois componentes de horário usados pela API do Windows."""
+
     _fields_ = [
         ("dwLowDateTime", ctypes.c_uint32),
         ("dwHighDateTime", ctypes.c_uint32)
@@ -62,6 +99,8 @@ class FILETIME(ctypes.Structure):
 
 
 class CREDENTIALW(ctypes.Structure):
+    """Layout da estrutura CREDENTIALW do Gerenciador de Credenciais."""
+
     _fields_ = [
         ("Flags", ctypes.c_uint32),
         ("Type", ctypes.c_uint32),
@@ -79,6 +118,8 @@ class CREDENTIALW(ctypes.Structure):
 
 
 class NETRESOURCEW(ctypes.Structure):
+    """Layout do recurso de rede usado pelas funções Windows de SMB."""
+
     _fields_ = [
         ("dwScope", ctypes.c_uint32),
         ("dwType", ctypes.c_uint32),
@@ -139,8 +180,110 @@ def obter_funcoes_credenciais():
     return cred_read, cred_write, cred_free
 
 
-def carregar_senha_rede():
-    """Lê a senha guardada para este usuário no Windows Credential Manager."""
+def salvar_configuracao():
+    """Grava as opções editáveis em JSON, sem incluir a senha da rede.
+
+    Escreve primeiro em um arquivo temporário e o renomeia após a gravação
+    para evitar substituir a configuração válida por um arquivo incompleto.
+    """
+
+    PASTA_CONFIGURACAO.mkdir(parents=True, exist_ok=True)
+    dados = {
+        "rede": {
+            "usuario": CONFIG["rede"]["usuario"],
+            "caminhos": CONFIG["rede"]["caminhos"]
+        },
+        "monitoramento": {
+            "pastas": CONFIG["monitoramento"]["pastas"],
+            "incluir_pastas_padrao": CONFIG["monitoramento"][
+                "incluir_pastas_padrao"
+            ],
+            "incluir_onedrive": CONFIG["monitoramento"]["incluir_onedrive"]
+        },
+        "logs": {
+            "url": CONFIG["logs"]["url"],
+            "timeout": CONFIG["logs"]["timeout"]
+        }
+    }
+    arquivo_temporario = ARQUIVO_CONFIGURACAO.with_suffix(".json.tmp")
+
+    try:
+        with arquivo_temporario.open("w", encoding="utf-8") as arquivo:
+            json.dump(dados, arquivo, ensure_ascii=False, indent=2)
+            arquivo.write("\n")
+
+        arquivo_temporario.replace(ARQUIVO_CONFIGURACAO)
+    except OSError:
+        if arquivo_temporario.exists():
+            arquivo_temporario.unlink()
+        raise
+
+
+def carregar_configuracao():
+    """Carrega as opções locais ou cria o arquivo com os valores padrão.
+
+    Rejeita JSON inválido e senhas em texto puro. Valida as seções antes de
+    atualizar ``CONFIG``; a senha permanece sob responsabilidade do
+    Gerenciador de Credenciais do Windows.
+    """
+
+    if not ARQUIVO_CONFIGURACAO.exists():
+        salvar_configuracao()
+
+    try:
+        with ARQUIVO_CONFIGURACAO.open("r", encoding="utf-8") as arquivo:
+            dados = json.load(arquivo)
+    except json.JSONDecodeError as erro:
+        raise ValueError(
+            f"JSON inválido na linha {erro.lineno}, "
+            f"coluna {erro.colno}: {erro.msg}"
+        ) from erro
+
+    if not isinstance(dados, dict):
+        raise ValueError("O arquivo de configurações deve conter um objeto JSON.")
+
+    secoes_padrao = {
+        "rede": {
+            "usuario": USUARIO_REDE,
+            "caminhos": CAMINHOS_REDE.copy()
+        },
+        "monitoramento": {
+            "pastas": [],
+            "incluir_pastas_padrao": False,
+            "incluir_onedrive": False
+        },
+        "logs": {
+            "url": None,
+            "timeout": 10
+        }
+    }
+
+    for nome_secao, valores_padrao in secoes_padrao.items():
+        if nome_secao not in dados:
+            dados[nome_secao] = valores_padrao.copy()
+        elif isinstance(dados[nome_secao], dict):
+            for chave, valor_padrao in valores_padrao.items():
+                dados[nome_secao].setdefault(chave, valor_padrao)
+
+    if "senha" in dados.get("rede", {}):
+        raise ValueError(
+            "Remova o campo 'senha' do JSON. "
+            "A senha deve ficar no Gerenciador de Credenciais do Windows."
+        )
+
+    validar_configuracao(dados, exigir_senha=False)
+    CONFIG.clear()
+    CONFIG.update(dados)
+    CONFIG["rede"]["senha"] = ""
+
+
+def carregar_senha_rede(usuario):
+    """Recupera a senha do Gerenciador de Credenciais do Windows.
+
+    Retorna ``None`` se não houver uma credencial salva para o usuário
+    solicitado. A memória alocada pela API do Windows é liberada mesmo se a
+    leitura ou decodificação falhar.
+    """
 
     cred_read, _, cred_free = obter_funcoes_credenciais()
     credencial = ctypes.POINTER(CREDENTIALW)()
@@ -154,6 +297,9 @@ def carregar_senha_rede():
         raise ctypes.WinError(codigo_erro)
 
     try:
+        if credencial.contents.UserName != usuario:
+            return None
+
         dados = ctypes.string_at(
             credencial.contents.CredentialBlob,
             credencial.contents.CredentialBlobSize
@@ -163,8 +309,12 @@ def carregar_senha_rede():
         cred_free(credencial)
 
 
-def salvar_senha_rede(senha):
-    """Guarda a senha no Windows Credential Manager para este usuário."""
+def salvar_senha_rede(senha, usuario):
+    """Armazena a senha protegida pelo Windows para a conta atual.
+
+    A senha é codificada no formato esperado pela API e nunca é gravada no
+    arquivo JSON de configurações.
+    """
 
     _, cred_write, _ = obter_funcoes_credenciais()
     dados = senha.encode("utf-16-le")
@@ -188,15 +338,18 @@ def salvar_senha_rede(senha):
         AttributeCount=0,
         Attributes=None,
         TargetAlias=None,
-        UserName=USUARIO_REDE
+        UserName=usuario
     )
 
     if not cred_write(ctypes.byref(credencial), 0):
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-def solicitar_senha_rede():
-    """Pede a senha uma vez e a salva no Windows Credential Manager."""
+def solicitar_senha_rede(usuario):
+    """Abre uma janela para obter e salvar a senha, se ainda não existir.
+
+    Retorna a senha informada; se a janela for cancelada, retorna ``None``.
+    """
 
     janela = tk.Tk()
     janela.title("Senha do compartilhamento")
@@ -208,7 +361,7 @@ def solicitar_senha_rede():
     ttk.Label(
         conteudo,
         text=(
-            f"Informe a senha da conta {USUARIO_REDE}. "
+            f"Informe a senha da conta {usuario}. "
             "Ela será guardada no Gerenciador de Credenciais do Windows, "
             "não no script."
         ),
@@ -221,6 +374,8 @@ def solicitar_senha_rede():
     resultado = {"senha": None}
 
     def salvar_e_fechar():
+        """Valida e salva a senha digitada antes de fechar a janela."""
+
         senha = campo_senha.get()
 
         if not senha:
@@ -232,7 +387,7 @@ def solicitar_senha_rede():
             return
 
         try:
-            salvar_senha_rede(senha)
+            salvar_senha_rede(senha, usuario)
         except (OSError, ValueError) as erro:
             messagebox.showerror(
                 "Não foi possível salvar a senha",
@@ -264,9 +419,12 @@ def solicitar_senha_rede():
     return resultado["senha"]
 
 
-def validar_configuracao(config):
+def validar_configuracao(config, exigir_senha=True):
     """
-    Valida as configurações definidas no início deste arquivo.
+    Confere estrutura e valores das seções de rede, monitoramento e logs.
+
+    ``exigir_senha`` deve ser falso ao validar opções carregadas do JSON,
+    porque a senha fica armazenada separadamente no Windows.
     """
 
     if not isinstance(config, dict):
@@ -288,7 +446,9 @@ def validar_configuracao(config):
     if not isinstance(rede.get("usuario"), str) or not rede["usuario"].strip():
         raise ValueError("Usuário da rede ausente ou inválido.")
 
-    if not isinstance(rede.get("senha"), str) or not rede["senha"]:
+    if exigir_senha and (
+        not isinstance(rede.get("senha"), str) or not rede["senha"]
+    ):
         raise ValueError("Senha da rede ausente ou inválida.")
 
     if (
@@ -334,7 +494,10 @@ def validar_configuracao(config):
 
 
 def extrair_caminhos(texto, descricao):
-    """Converte os caminhos de um campo multilinha em uma lista validada."""
+    """Extrai caminhos não vazios de um campo multilinha.
+
+    ``descricao`` identifica o tipo de caminho na mensagem de validação.
+    """
 
     caminhos = [linha.strip() for linha in texto.splitlines() if linha.strip()]
 
@@ -344,8 +507,62 @@ def extrair_caminhos(texto, descricao):
     return caminhos
 
 
+def solicitar_acao_grafica():
+    """Exibe o menu inicial e retorna ``iniciar``, ``configurar`` ou ``sair``.
+
+    Fechar a janela equivale a escolher ``sair``.
+    """
+
+    janela = tk.Tk()
+    janela.title("Guarda Arquivos Lab")
+    janela.resizable(False, False)
+
+    conteudo = ttk.Frame(janela, padding=18)
+    conteudo.grid(row=0, column=0, sticky="nsew")
+    conteudo.columnconfigure(0, weight=1)
+
+    ttk.Label(
+        conteudo,
+        text="O que deseja fazer?",
+        font=("Segoe UI", 12, "bold")
+    ).grid(row=0, column=0, sticky="w", pady=(0, 12))
+
+    acao = {"valor": "sair"}
+
+    def escolher(valor):
+        """Registra a ação escolhida e fecha o menu."""
+
+        acao["valor"] = valor
+        janela.destroy()
+
+    ttk.Button(
+        conteudo,
+        text="Iniciar backup",
+        command=lambda: escolher("iniciar")
+    ).grid(row=1, column=0, sticky="ew", pady=4)
+    ttk.Button(
+        conteudo,
+        text="Configurar pastas...",
+        command=lambda: escolher("configurar")
+    ).grid(row=2, column=0, sticky="ew", pady=4)
+    ttk.Button(
+        conteudo,
+        text="Sair",
+        command=lambda: escolher("sair")
+    ).grid(row=3, column=0, sticky="ew", pady=(4, 0))
+
+    janela.protocol("WM_DELETE_WINDOW", janela.destroy)
+    janela.mainloop()
+
+    return acao["valor"]
+
+
 def solicitar_configuracao_grafica():
-    """Solicita somente as pastas de origem em uma janela gráfica."""
+    """Permite revisar, adicionar e salvar as pastas de origem.
+
+    As pastas existentes são carregadas no campo. Retorna ``True`` depois de
+    validar e salvar as alterações; cancelar ou fechar retorna ``False``.
+    """
 
     janela = tk.Tk()
     janela.title("Pastas para varrer")
@@ -370,8 +587,12 @@ def solicitar_configuracao_grafica():
 
     pastas = tk.Text(conteudo, height=12, wrap="none")
     pastas.grid(row=2, column=0, sticky="nsew", pady=(2, 8))
+    for pasta in CONFIG["monitoramento"]["pastas"]:
+        pastas.insert("end", f"{pasta}\n")
 
     def adicionar_pasta():
+        """Abre o seletor e inclui uma pasta sem duplicar o campo atual."""
+
         caminho = filedialog.askdirectory(
             parent=janela,
             title="Selecione uma pasta de origem",
@@ -393,15 +614,26 @@ def solicitar_configuracao_grafica():
     resultado = {"confirmado": False}
 
     def confirmar():
+        """Valida e persiste as pastas antes de confirmar a janela."""
+
         try:
             CONFIG["monitoramento"]["pastas"] = extrair_caminhos(
                 pastas.get("1.0", "end"),
                 "origem"
             )
+            validar_configuracao(CONFIG, exigir_senha=False)
+            salvar_configuracao()
         except ValueError as erro:
             messagebox.showerror(
-                "Pastas obrigatórias",
+                "Configuração inválida",
                 str(erro),
+                parent=janela
+            )
+            return
+        except OSError as erro:
+            messagebox.showerror(
+                "Falha ao salvar configurações",
+                f"Não foi possível salvar {ARQUIVO_CONFIGURACAO}:\n{erro}",
                 parent=janela
             )
             return
@@ -434,18 +666,22 @@ def solicitar_configuracao_grafica():
 
 class RemoteLogHandler(logging.Handler):
     """
-    Envia registros de log para um endpoint HTTP através de POST JSON.
+    Envia registros de log para um endpoint HTTP por meio de POST JSON.
 
-    Não realiza gravação local.
+    A falha remota é encaminhada ao mecanismo padrão de erros do logging para
+    não criar um ciclo de novas mensagens de log.
     """
 
     def __init__(self, url, timeout=10):
-        super().__init__()
+        """Inicializa o destino HTTP e o limite de espera da requisição."""
 
+        super().__init__()
         self.url = url
         self.timeout = timeout
 
     def emit(self, record):
+        """Serializa e envia um registro; encaminha falhas ao logging."""
+
         try:
             payload = {
                 "timestamp": datetime.fromtimestamp(
@@ -490,7 +726,7 @@ class RemoteLogHandler(logging.Handler):
 
 
 def configurar_logging():
-    """Configura o console e o envio remoto de registros."""
+    """Configura logs no console e, se definido, em um endpoint HTTP."""
 
     logger = logging.getLogger()
 
@@ -533,8 +769,10 @@ def configurar_logging():
 
 def obter_pastas_origem():
     """
-    Valida as pastas selecionadas pelo usuário e adiciona as pastas padrão
-    do Windows e do OneDrive, se habilitadas.
+    Expande variáveis e valida as pastas de origem configuradas.
+
+    Também inclui pastas padrão do Windows e do OneDrive quando essas opções
+    estiverem habilitadas. Remove duplicatas sem alterar a ordem.
     """
 
     logging.info("Iniciando mapeamento das pastas de origem.")
@@ -636,7 +874,10 @@ def obter_pastas_origem():
 # =============================================================================
 
 def conectar_rede(caminho):
-    """Estabelece conexão com um compartilhamento de rede."""
+    """Conecta a um compartilhamento SMB usando a conta configurada.
+
+    Retorna ``True`` apenas se o caminho estiver acessível após a conexão.
+    """
 
     rede = CONFIG["rede"]
 
@@ -694,7 +935,10 @@ def conectar_rede(caminho):
 
 
 def obter_caminho_ativo():
-    """Retorna o primeiro caminho de rede disponível."""
+    """Tenta os destinos configurados e retorna o primeiro acessível.
+
+    Retorna ``None`` se todos os compartilhamentos falharem.
+    """
 
     logging.info("Buscando compartilhamento de rede disponível.")
 
@@ -709,7 +953,7 @@ def obter_caminho_ativo():
 
 
 def desconectar_rede(caminho):
-    """Desconecta o compartilhamento de rede utilizado."""
+    """Encerra a conexão com o compartilhamento usado na varredura."""
 
     logging.info(f"Desconectando rede: {caminho}")
 
@@ -737,7 +981,11 @@ def desconectar_rede(caminho):
 # =============================================================================
 
 def validar_matricula(nome):
-    """Identifica uma matrícula válida no nome do item."""
+    """Retorna a primeira matrícula válida encontrada no nome do item.
+
+    A validade é determinada pelos limites globais de matrícula; se nenhuma
+    sequência numérica atender aos limites, retorna ``None``.
+    """
 
     matriculas = re.findall(r"(\d{4})", nome)
 
@@ -752,7 +1000,11 @@ def validar_matricula(nome):
 
 
 def ler_curso_ativo(caminho_raiz, matricula):
-    """Consulta o curso ativo através do arquivo de configuração."""
+    """Lê o nome do curso em ``<destino>/<matrícula>/.curso_atual.txt``.
+
+    Retorna ``None`` se o arquivo não existir, estiver vazio ou não puder ser
+    lido.
+    """
 
     arquivo_config = (
         Path(caminho_raiz)
@@ -792,7 +1044,12 @@ def ler_curso_ativo(caminho_raiz, matricula):
 # =============================================================================
 
 def resolver_conflito(caminho_final, caminho_origem=None):
-    """Evita sobrescrita de arquivos existentes."""
+    """Escolhe um destino que não sobrescreve um item já existente.
+
+    Se origem e destino aparentarem ser cópias idênticas pelo tamanho e por
+    horários próximos, retorna ``None`` para ignorar o item. Caso contrário,
+    gera um nome alternativo.
+    """
 
     destino = Path(caminho_final)
 
@@ -857,7 +1114,11 @@ def resolver_conflito(caminho_final, caminho_origem=None):
 # =============================================================================
 
 def copiar_e_remover_origem(origem, destino):
-    """Copia o item para o destino e remove sua origem."""
+    """Copia um arquivo ou diretório e remove a origem após a cópia.
+
+    Esta operação é destrutiva para a origem; por isso, os erros devem ser
+    tratados pelo chamador e os resultados confirmados no destino.
+    """
 
     if origem.is_dir():
 
@@ -876,7 +1137,7 @@ def copiar_e_remover_origem(origem, destino):
 
 
 def remover_destino_parcial(destino):
-    """Remove uma cópia incompleta após falha no processamento."""
+    """Tenta remover do destino o item deixado por um processamento com erro."""
 
     if not destino.exists():
         return
@@ -904,7 +1165,12 @@ def remover_destino_parcial(destino):
 # =============================================================================
 
 def processar_item(item_obj, destino_raiz, estatisticas):
-    """Identifica, organiza e movimenta um item."""
+    """Organiza um item elegível e atualiza as estatísticas da execução.
+
+    Itens ocultos, atalhos e nomes sem matrícula válida são ignorados. Para
+    itens elegíveis, define a pasta de matrícula/curso, resolve conflitos de
+    nomes e delega a cópia e remoção da origem.
+    """
 
     item = item_obj.name
 
@@ -1008,7 +1274,7 @@ def processar_item(item_obj, destino_raiz, estatisticas):
 # =============================================================================
 
 def montar_relatorio(estatisticas, destino_raiz):
-    """Monta o resumo textual da execução."""
+    """Cria as linhas do resumo com totais, itens recentes e erros."""
 
     mensagens = [
         f"Rede OK -> {destino_raiz}",
@@ -1040,7 +1306,7 @@ def montar_relatorio(estatisticas, destino_raiz):
 
 
 def exibir_resultado(estatisticas):
-    """Exibe o popup correspondente ao resultado da execução."""
+    """Escolhe o conteúdo e o ícone do popup conforme o resultado."""
 
     movidos = estatisticas["movidos"]
     ignorados = estatisticas["ignorados"]
@@ -1133,7 +1399,11 @@ def mostrar_popup(titulo, texto, tipo=0):
 # =============================================================================
 
 def varredura():
-    """Coordena o processo completo de backup."""
+    """Percorre as origens configuradas e organiza os itens encontrados.
+
+    A conexão de rede é encerrada no bloco ``finally``, inclusive quando
+    ocorre uma falha durante a varredura ou a apresentação do resumo.
+    """
 
     logging.info("Iniciando rotina de varredura e backup.")
 
@@ -1232,23 +1502,54 @@ def varredura():
 # =============================================================================
 
 def main():
-    """Obtém a credencial e as pastas antes de executar o backup."""
+    """Inicializa o aplicativo, configura as pastas e inicia a varredura.
+
+    Abre o editor diretamente quando recebe ``--configurar`` ou ainda não há
+    pastas salvas; nos demais casos, apresenta o menu principal.
+    """
 
     try:
 
-        senha = carregar_senha_rede()
+        argumentos = argparse.ArgumentParser(
+            description="Guarda Arquivos Lab"
+        )
+        argumentos.add_argument(
+            "--configurar",
+            action="store_true",
+            help="Editar as pastas monitoradas antes do backup"
+        )
+        opcoes = argumentos.parse_args()
+
+        carregar_configuracao()
+
+        if opcoes.configurar or not CONFIG["monitoramento"]["pastas"]:
+            if not solicitar_configuracao_grafica():
+                return
+        else:
+            while True:
+                acao = solicitar_acao_grafica()
+
+                if acao == "sair":
+                    return
+
+                if acao == "iniciar":
+                    break
+
+                if acao == "configurar":
+                    solicitar_configuracao_grafica()
+
+        senha = SENHA_REDE or carregar_senha_rede(
+            CONFIG["rede"]["usuario"]
+        )
 
         if senha is None:
-            senha = solicitar_senha_rede()
+            senha = solicitar_senha_rede(CONFIG["rede"]["usuario"])
 
         if not senha:
             return
 
         CONFIG["rede"]["senha"] = senha
         validar_configuracao(CONFIG)
-
-        if not solicitar_configuracao_grafica():
-            return
 
         configurar_logging()
 
@@ -1266,7 +1567,7 @@ def main():
         mensagem = (
             "Não foi possível iniciar ou concluir o backup.\n\n"
             f"Motivo: {erro}\n\n"
-            "Confira os dados informados e tente novamente."
+            f"Confira {ARQUIVO_CONFIGURACAO} e tente novamente."
         )
 
         messagebox.showerror(
