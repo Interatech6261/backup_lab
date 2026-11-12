@@ -32,6 +32,19 @@ No Prompt de Comando ou PowerShell, na pasta do projeto:
 py backup_lab.py
 ```
 
+### Executar diretamente pelo GitHub (PowerShell)
+
+Com Python instalado, rode este comando para baixar a versão da branch `main`
+e abrir o script:
+
+```powershell
+$url="https://raw.githubusercontent.com/Interatech6261/backup_lab/main/backup_lab.py"; $file="$env:TEMP\backup_lab.py"; Invoke-WebRequest -Uri $url -OutFile $file -ErrorAction Stop; if ($?) { py $file }
+```
+
+O script abre a janela de configuração e inicia o backup ao clicar em
+**Iniciar backup**. O comando baixa a cópia mais recente do GitHub, portanto
+publique as alterações antes de executá-las dessa forma.
+
 ## Atenção
 
 O script **move** os itens processados: copia-os para o destino e depois remove
