@@ -8,11 +8,12 @@ e, quando disponível, pelo curso registrado em ``.curso_atual.txt``.
 
 Fluxo principal:
     1. Carrega as opções locais em ``%LOCALAPPDATA%\\GuardaArquivosLab``.
-    2. Mostra o menu para iniciar o backup ou editar as pastas monitoradas.
-    3. Obtém a senha do Gerenciador de Credenciais do Windows, solicitando-a
-       apenas quando ainda não estiver salva.
+    2. Na primeira execução, guia o usuário por etapas para escolher as pastas
+       e validar/salvar a senha da rede.
+    3. Nas execuções seguintes, oferece apenas iniciar o backup ou configurar
+       as pastas monitoradas.
     4. Conecta ao primeiro compartilhamento disponível e processa os itens.
-    5. Exibe um resumo e encerra a conexão de rede.
+    5. Exibe um resumo e encerra somente a conexão criada pelo próprio script.
 
 ATENÇÃO: os itens são copiados para o destino e depois removidos da origem.
 Use somente destinos e pastas autorizados, e valide o resultado antes de
@@ -83,6 +84,11 @@ LIMITE_MATRICULA_MAX = 10000000000
 
 LIMITE_ITENS_RELATORIO = 15
 LIMITE_TEXTO_POPUP = 500
+
+CONEXOES_CRIADAS_PELO_SCRIPT = set()
+ERRO_CONFLITO_CREDENCIAIS_REDE = 1219
+ERRO_SENHA_INVALIDA = 86
+ERRO_LOGON_FALHOU = 1326
 
 
 # =============================================================================
@@ -345,14 +351,18 @@ def salvar_senha_rede(senha, usuario):
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-def solicitar_senha_rede(usuario):
-    """Abre uma janela para obter e salvar a senha, se ainda não existir.
+def solicitar_senha_rede(usuario, firststeps=False):
+    """Testa a senha digitada e a salva após autenticação bem-sucedida.
 
     Retorna a senha informada; se a janela for cancelada, retorna ``None``.
     """
 
     janela = tk.Tk()
-    janela.title("Senha do compartilhamento")
+    janela.title(
+        "First steps - Etapa 2: Acesso à rede"
+        if firststeps
+        else "Senha do compartilhamento"
+    )
     janela.resizable(False, False)
     conteudo = ttk.Frame(janela, padding=16)
     conteudo.grid(row=0, column=0, sticky="nsew")
@@ -361,9 +371,15 @@ def solicitar_senha_rede(usuario):
     ttk.Label(
         conteudo,
         text=(
-            f"Informe a senha da conta {usuario}. "
-            "Ela será guardada no Gerenciador de Credenciais do Windows, "
-            "não no script."
+            f"Etapa 2 de 2: informe a senha da conta {usuario}. "
+            "Ela será testada no compartilhamento e, se aceita, guardada "
+            "no Gerenciador de Credenciais do Windows."
+            if firststeps
+            else (
+                f"Informe a senha da conta {usuario}. "
+                "Ela será testada no compartilhamento e, se aceita, guardada "
+                "no Gerenciador de Credenciais do Windows."
+            )
         ),
         wraplength=420
     ).grid(row=0, column=0, sticky="w", pady=(0, 12))
@@ -373,8 +389,8 @@ def solicitar_senha_rede(usuario):
     campo_senha.grid(row=2, column=0, sticky="ew", pady=(2, 12))
     resultado = {"senha": None}
 
-    def salvar_e_fechar():
-        """Valida e salva a senha digitada antes de fechar a janela."""
+    def testar_e_salvar():
+        """Testa a senha antes de armazená-la no Windows."""
 
         senha = campo_senha.get()
 
@@ -386,9 +402,24 @@ def solicitar_senha_rede(usuario):
             )
             return
 
+        validada, mensagem, caminho = testar_credenciais_rede(
+            usuario,
+            senha
+        )
+
+        if not validada:
+            messagebox.showerror(
+                "Não foi possível validar a senha",
+                mensagem,
+                parent=janela
+            )
+            return
+
         try:
             salvar_senha_rede(senha, usuario)
         except (OSError, ValueError) as erro:
+            if caminho:
+                desconectar_rede(caminho)
             messagebox.showerror(
                 "Não foi possível salvar a senha",
                 str(erro),
@@ -408,8 +439,8 @@ def solicitar_senha_rede(usuario):
     ).grid(row=0, column=0, padx=(0, 8))
     ttk.Button(
         botoes,
-        text="Salvar e continuar",
-        command=salvar_e_fechar
+        text="Validar e continuar" if firststeps else "Testar e salvar",
+        command=testar_e_salvar
     ).grid(row=0, column=1)
 
     janela.protocol("WM_DELETE_WINDOW", janela.destroy)
@@ -508,7 +539,7 @@ def extrair_caminhos(texto, descricao):
 
 
 def solicitar_acao_grafica():
-    """Exibe o menu inicial e retorna ``iniciar``, ``configurar`` ou ``sair``.
+    """Exibe a tela inicial simples e retorna a ação escolhida.
 
     Fechar a janela equivale a escolher ``sair``.
     """
@@ -523,9 +554,14 @@ def solicitar_acao_grafica():
 
     ttk.Label(
         conteudo,
-        text="O que deseja fazer?",
+        text="Guarda Arquivos Lab",
         font=("Segoe UI", 12, "bold")
-    ).grid(row=0, column=0, sticky="w", pady=(0, 12))
+    ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+
+    ttk.Label(
+        conteudo,
+        text="Inicie o backup ou ajuste as pastas monitoradas."
+    ).grid(row=1, column=0, sticky="w", pady=(0, 12))
 
     acao = {"valor": "sair"}
 
@@ -539,17 +575,12 @@ def solicitar_acao_grafica():
         conteudo,
         text="Iniciar backup",
         command=lambda: escolher("iniciar")
-    ).grid(row=1, column=0, sticky="ew", pady=4)
-    ttk.Button(
-        conteudo,
-        text="Configurar pastas...",
-        command=lambda: escolher("configurar")
     ).grid(row=2, column=0, sticky="ew", pady=4)
     ttk.Button(
         conteudo,
-        text="Sair",
-        command=lambda: escolher("sair")
-    ).grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        text="Configurar pastas",
+        command=lambda: escolher("configurar")
+    ).grid(row=3, column=0, sticky="ew", pady=4)
 
     janela.protocol("WM_DELETE_WINDOW", janela.destroy)
     janela.mainloop()
@@ -557,7 +588,7 @@ def solicitar_acao_grafica():
     return acao["valor"]
 
 
-def solicitar_configuracao_grafica():
+def solicitar_configuracao_grafica(firststeps=False):
     """Permite revisar, adicionar e salvar as pastas de origem.
 
     As pastas existentes são carregadas no campo. Retorna ``True`` depois de
@@ -565,7 +596,11 @@ def solicitar_configuracao_grafica():
     """
 
     janela = tk.Tk()
-    janela.title("Pastas para varrer")
+    janela.title(
+        "First steps - Etapa 1: Pastas monitoradas"
+        if firststeps
+        else "Configurar pastas"
+    )
     janela.geometry("700x520")
     janela.minsize(580, 420)
     janela.columnconfigure(0, weight=1)
@@ -579,8 +614,13 @@ def solicitar_configuracao_grafica():
     ttk.Label(
         conteudo,
         text=(
-            "Adicione as pastas que deseja verificar. "
+            "Etapa 1 de 2: escolha as pastas que o sistema deve verificar. "
             "Os arquivos encontrados serão movidos para o compartilhamento."
+            if firststeps
+            else (
+                "Escolha as pastas que o sistema deve verificar. "
+                "Os arquivos encontrados serão movidos para o compartilhamento."
+            )
         ),
         wraplength=640
     ).grid(row=0, column=0, sticky="w", pady=(0, 12))
@@ -650,7 +690,7 @@ def solicitar_configuracao_grafica():
     ).grid(row=0, column=0, padx=(0, 8))
     ttk.Button(
         botoes,
-        text="Iniciar backup",
+        text="Próximo" if firststeps else "Salvar configurações",
         command=confirmar
     ).grid(row=0, column=1)
 
@@ -658,6 +698,22 @@ def solicitar_configuracao_grafica():
     janela.mainloop()
 
     return resultado["confirmado"]
+
+
+def executar_firststeps(senha):
+    """Conclui a configuração inicial guiando o usuário pelas etapas pendentes."""
+
+    if not CONFIG["monitoramento"]["pastas"]:
+        if not solicitar_configuracao_grafica(firststeps=True):
+            return None
+
+    if not senha:
+        senha = solicitar_senha_rede(
+            CONFIG["rede"]["usuario"],
+            firststeps=True
+        )
+
+    return senha
 
 
 # =============================================================================
@@ -873,10 +929,126 @@ def obter_pastas_origem():
 # 5. CONEXÃO DE REDE
 # =============================================================================
 
+def testar_credenciais_rede(usuario, senha):
+    """Valida credenciais tentando conectar aos compartilhamentos configurados.
+
+    Não interrompe sessões existentes. Se um caminho já estiver acessível ou
+    o Windows informar conflito de credenciais, esse caminho não comprova a
+    senha digitada; nesse caso, o resultado informa que não foi possível
+    validá-la com segurança.
+
+    Retorna uma tupla ``(validada, mensagem, caminho_conectado)``. Uma conexão
+    aberta para o teste permanece registrada como pertencente ao script para
+    ser reutilizada pelo backup e encerrada ao final.
+    """
+
+    caminhos_com_conexao_existente = []
+    caminhos_com_conflito = []
+    erros_credenciais = []
+    outros_erros = []
+
+    for caminho in CONFIG["rede"]["caminhos"]:
+        if Path(caminho).exists():
+            caminhos_com_conexao_existente.append(caminho)
+            continue
+
+        try:
+            conectar, _ = obter_funcoes_rede()
+            recurso = NETRESOURCEW(
+                dwScope=0,
+                dwType=1,
+                dwDisplayType=0,
+                dwUsage=0,
+                lpLocalName=None,
+                lpRemoteName=caminho,
+                lpComment=None,
+                lpProvider=None
+            )
+            codigo_erro = conectar(
+                ctypes.byref(recurso),
+                senha,
+                usuario,
+                0
+            )
+        except Exception as erro:
+            logging.exception(
+                "Erro ao testar credenciais para %s.",
+                caminho
+            )
+            outros_erros.append(f"{caminho}: {erro}")
+            continue
+
+        if codigo_erro == 0:
+            CONEXOES_CRIADAS_PELO_SCRIPT.add(caminho)
+            if Path(caminho).exists():
+                logging.info(
+                    "Credenciais validadas no compartilhamento %s.",
+                    caminho
+                )
+                return (
+                    True,
+                    f"A senha foi validada no compartilhamento {caminho}.",
+                    caminho
+                )
+
+            outros_erros.append(
+                f"{caminho}: conectado, mas o compartilhamento não ficou acessível."
+            )
+            desconectar_rede(caminho)
+        elif codigo_erro == ERRO_CONFLITO_CREDENCIAIS_REDE:
+            caminhos_com_conflito.append(caminho)
+        elif codigo_erro in (ERRO_SENHA_INVALIDA, ERRO_LOGON_FALHOU):
+            erros_credenciais.append(caminho)
+        else:
+            outros_erros.append(
+                f"{caminho}: {ctypes.FormatError(codigo_erro).strip()}"
+            )
+
+    if erros_credenciais and not (
+        caminhos_com_conexao_existente or caminhos_com_conflito
+    ):
+        return (
+            False,
+            "O Windows recusou o usuário ou a senha nos compartilhamentos "
+            "testados. Confira os dados e tente novamente.",
+            None
+        )
+
+    if caminhos_com_conexao_existente or caminhos_com_conflito:
+        caminhos = caminhos_com_conexao_existente + caminhos_com_conflito
+        logging.warning(
+            "Não foi possível validar a senha devido a conexões SMB "
+            "preexistentes ou conflitos: %s",
+            ", ".join(caminhos)
+        )
+        return (
+            False,
+            "Não foi possível confirmar a senha porque já existe uma conexão "
+            "ativa com um dos servidores usando uma sessão que não pode ser "
+            "substituída pelo programa. Feche essa conexão no Windows e tente "
+            "novamente. A senha não foi salva.",
+            None
+        )
+
+    detalhes = "\n".join(outros_erros)
+    if detalhes:
+        logging.error("Falha ao validar a senha:\n%s", detalhes)
+
+    return (
+        False,
+        "Não foi possível testar a senha porque os compartilhamentos estão "
+        "indisponíveis ou não responderam. Verifique a rede e tente novamente. "
+        "A senha não foi salva.",
+        None
+    )
+
+
 def conectar_rede(caminho):
     """Conecta a um compartilhamento SMB usando a conta configurada.
 
-    Retorna ``True`` apenas se o caminho estiver acessível após a conexão.
+    Reutiliza conexões já acessíveis sem alterá-las. Retorna ``True`` apenas
+    quando o caminho está acessível; registra a propriedade da conexão apenas
+    se ela foi criada pelo script.
     """
 
     rede = CONFIG["rede"]
@@ -886,12 +1058,13 @@ def conectar_rede(caminho):
     pasta_rede = Path(caminho)
 
     if pasta_rede.exists():
-        logging.info("Caminho já está acessível.")
+        logging.info(
+            "Caminho já está acessível; a conexão existente será reutilizada."
+        )
         return True
 
     try:
-        conectar, desconectar = obter_funcoes_rede()
-        desconectar(caminho, 0, 1)
+        conectar, _ = obter_funcoes_rede()
 
         recurso = NETRESOURCEW(
             dwScope=0,
@@ -911,6 +1084,21 @@ def conectar_rede(caminho):
         )
 
         if codigo_erro:
+            if pasta_rede.exists():
+                logging.info(
+                    "O caminho ficou acessível durante a tentativa; "
+                    "a conexão existente será reutilizada."
+                )
+                return True
+
+            if codigo_erro == ERRO_CONFLITO_CREDENCIAIS_REDE:
+                logging.error(
+                    "Já existe uma conexão com o servidor usando outras "
+                    "credenciais. A conexão existente foi mantida intacta: %s",
+                    caminho
+                )
+                return False
+
             logging.error(
                 "Falha ao conectar em %s: %s",
                 caminho,
@@ -919,12 +1107,16 @@ def conectar_rede(caminho):
             return False
 
         if pasta_rede.exists():
+            CONEXOES_CRIADAS_PELO_SCRIPT.add(caminho)
             logging.info(f"Conexão estabelecida: {caminho}")
             return True
 
         logging.warning(
-            f"Caminho ainda inacessível: {caminho}"
+            "A conexão foi criada, mas o caminho continua inacessível: %s",
+            caminho
         )
+        CONEXOES_CRIADAS_PELO_SCRIPT.add(caminho)
+        desconectar_rede(caminho)
 
     except Exception:
         logging.exception(
@@ -953,7 +1145,17 @@ def obter_caminho_ativo():
 
 
 def desconectar_rede(caminho):
-    """Encerra a conexão com o compartilhamento usado na varredura."""
+    """Encerra somente uma conexão SMB criada por este processo.
+
+    Conexões preexistentes ou pertencentes a outros processos são preservadas.
+    """
+
+    if caminho not in CONEXOES_CRIADAS_PELO_SCRIPT:
+        logging.info(
+            "Conexão preexistente preservada; não será desconectada: %s",
+            caminho
+        )
+        return
 
     logging.info(f"Desconectando rede: {caminho}")
 
@@ -968,6 +1170,7 @@ def desconectar_rede(caminho):
                 ctypes.FormatError(codigo_erro).strip()
             )
         else:
+            CONEXOES_CRIADAS_PELO_SCRIPT.discard(caminho)
             logging.info("Rede desconectada.")
 
     except Exception:
@@ -1502,11 +1705,7 @@ def varredura():
 # =============================================================================
 
 def main():
-    """Inicializa o aplicativo, configura as pastas e inicia a varredura.
-
-    Abre o editor diretamente quando recebe ``--configurar`` ou ainda não há
-    pastas salvas; nos demais casos, apresenta o menu principal.
-    """
+    """Executa First steps na primeira configuração e depois mostra o menu."""
 
     try:
 
@@ -1522,7 +1721,19 @@ def main():
 
         carregar_configuracao()
 
-        if opcoes.configurar or not CONFIG["monitoramento"]["pastas"]:
+        senha = SENHA_REDE or carregar_senha_rede(
+            CONFIG["rede"]["usuario"]
+        )
+        precisa_firststeps = (
+            not CONFIG["monitoramento"]["pastas"]
+            or not senha
+        )
+
+        if precisa_firststeps:
+            senha = executar_firststeps(senha)
+            if not senha:
+                return
+        elif opcoes.configurar:
             if not solicitar_configuracao_grafica():
                 return
         else:
@@ -1537,13 +1748,6 @@ def main():
 
                 if acao == "configurar":
                     solicitar_configuracao_grafica()
-
-        senha = SENHA_REDE or carregar_senha_rede(
-            CONFIG["rede"]["usuario"]
-        )
-
-        if senha is None:
-            senha = solicitar_senha_rede(CONFIG["rede"]["usuario"])
 
         if not senha:
             return

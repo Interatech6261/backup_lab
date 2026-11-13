@@ -14,10 +14,12 @@ do item.
 
 Na primeira execução, o programa cria automaticamente um arquivo local em
 `%LOCALAPPDATA%\GuardaArquivosLab\config.json` (normalmente em
-`C:\Users\<usuário>\AppData\Local\GuardaArquivosLab\config.json`) e abre a
-configuração inicial das pastas. Depois de clicar em "Iniciar backup", as
-opções são salvas. Nas próximas execuções, uma janela oferece os botões
-"Iniciar backup", "Configurar pastas..." e "Sair".
+`C:\Users\<usuário>\AppData\Local\GuardaArquivosLab\config.json`) e apresenta
+o **First steps**: primeiro você escolhe as pastas monitoradas; depois informa
+a senha, que é testada no compartilhamento e salva no Gerenciador de
+Credenciais do Windows se for aceita. Ao concluir, o backup é iniciado.
+Nas próximas execuções, a tela inicial fica reduzida a **Iniciar backup** e
+**Configurar pastas**. Feche a janela para sair.
 
 Também é possível fechar o programa e editar esse JSON a qualquer momento. Por
 exemplo, no PowerShell:
@@ -50,17 +52,20 @@ e abrir o script:
 $url="https://raw.githubusercontent.com/Interatech6261/backup_lab/main/backup_lab.py"; $file="$env:TEMP\backup_lab.py"; Invoke-WebRequest -Uri $url -OutFile $file -ErrorAction Stop; if ($?) { py $file }
 ```
 
-Na primeira execução, a janela pedirá as pastas e a senha da rede. Nas
-execuções seguintes, escolha **Iniciar backup** ou **Configurar pastas...** na
-janela inicial. Para abrir a configuração diretamente:
+Na primeira execução, o **First steps** guiará a seleção das pastas e a
+validação da senha da rede. Nas execuções seguintes, escolha **Iniciar backup**
+ou **Configurar pastas** na tela inicial. Para abrir a configuração
+diretamente:
 
 ```powershell
 py $file --configurar
 ```
 
-O script abre a janela de configuração e inicia o backup ao clicar em
-**Iniciar backup**. O comando baixa a cópia mais recente do GitHub, portanto
-publique as alterações antes de executá-las dessa forma.
+Essa opção abre a configuração das pastas e inicia o backup depois que as
+alterações forem salvas.
+
+O comando baixa a cópia mais recente do GitHub, portanto publique as
+alterações antes de executá-las dessa forma.
 
 ## Atenção
 
